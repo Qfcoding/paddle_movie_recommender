@@ -100,6 +100,9 @@ class NCF(nn.Layer):
 
         self.use_features = use_features
         self.use_poster = use_poster
+        self.num_user_features = num_user_features
+        self.num_movie_features = num_movie_features
+        self.poster_feature_dim = poster_feature_dim
 
         # GMF部分
         self.gmf = GMF(num_users, num_items, gmf_embed_dim)
@@ -154,12 +157,40 @@ class NCF(nn.Layer):
                 tensors_to_concat.append(movie_features)
             fusion_input = paddle.concat(tensors_to_concat, axis=1)
 
+            # 检查是否需要填充特征（当模型期望特征但传入的特征数量不足时）
+            expected_features_dim = self.num_user_features + self.num_movie_features
+            actual_features_dim = fusion_input.shape[1] - (
+                self.gmf_output_dim + self.mlp_output_dim
+            )
+            if actual_features_dim < expected_features_dim:
+                # 用零填充缺失的特征
+                padding_dim = expected_features_dim - actual_features_dim
+                padding = paddle.zeros(
+                    [fusion_input.shape[0], padding_dim], dtype=fusion_input.dtype
+                )
+                fusion_input = paddle.concat([fusion_input, padding], axis=1)
+        elif user_features is not None or movie_features is not None:
+            # 模型初始化时use_features=False，但实际调用时传入了特征
+            # 此时需要将输入特征切片到预期维度，避免维度不匹配
+            expected_base_dim = self.gmf_output_dim + self.mlp_output_dim
+            actual_input_dim = fusion_input.shape[1]
+            if actual_input_dim != expected_base_dim:
+                fusion_input = fusion_input[:, :expected_base_dim]
+
         # 添加海报特征
         if self.use_poster and poster_features is not None:
-            # 对poster_features进行池化（如果输入是3D）
             if len(poster_features.shape) == 3:
                 poster_features = paddle.mean(poster_features, axis=1)
             fusion_input = paddle.concat([fusion_input, poster_features], axis=1)
+        elif poster_features is not None and not self.use_poster:
+            # 模型初始化时use_poster=False，但实际调用时传入了海报特征
+            # 此时需要将输入切片到预期维度
+            expected_base_dim = self.gmf_output_dim + self.mlp_output_dim
+            if self.use_features:
+                expected_base_dim += self.num_user_features + self.num_movie_features
+            actual_input_dim = fusion_input.shape[1]
+            if actual_input_dim != expected_base_dim:
+                fusion_input = fusion_input[:, :expected_base_dim]
 
         # 最终预测
         prediction = self.fusion(fusion_input)
