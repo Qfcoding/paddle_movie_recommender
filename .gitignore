@@ -26,3 +26,4 @@ ENV/
 *.pdparams
 posters/
 data/ml-1m/
+data/processed/*.pkl
