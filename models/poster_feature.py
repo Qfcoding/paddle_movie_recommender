@@ -29,7 +29,18 @@ class PosterFeatureExtractor:
         """
         self.poster_dir = poster_dir
         self.output_dir = output_dir
-        self.use_gpu = use_gpu and paddle.is_compiled_with_cuda()
+
+        # 检测GPU
+        try:
+            self.use_gpu = (
+                use_gpu
+                and hasattr(paddle, "is_compiled_with_cuda")
+                and paddle.is_compiled_with_cuda()
+            )
+        except Exception:
+            self.use_gpu = False
+
+        print(f"海报特征提取器初始化: GPU={'是' if self.use_gpu else '否'}")
 
         # 模型和预处理
         self.model = None
@@ -48,26 +59,22 @@ class PosterFeatureExtractor:
     def load_model(self):
         """加载预训练ResNet50模型"""
         print("加载预训练ResNet50模型...")
-        self.model = resnet50(pretrained=True)
+        model = resnet50(pretrained=True)
 
         # 移除最后的分类层，获取特征向量
         self.model = paddle.nn.Sequential(
-            self.model.conv1,
-            self.model.bn1,
-            self.model.relu,
-            self.model.maxpool,
-            self.model.layer1,
-            self.model.layer2,
-            self.model.layer3,
-            self.model.layer4,
-            self.model.avgpool,
+            model.conv1,
+            model.bn1,
+            model.relu,
+            model.maxpool,
+            model.layer1,
+            model.layer2,
+            model.layer3,
+            model.layer4,
+            model.avgpool,
         )
 
         self.model.eval()
-
-        if self.use_gpu:
-            self.model.cuda()
-
         print("模型加载完成")
 
     def extract_poster_features(self, movie_ids, movie_id_to_path):
@@ -103,9 +110,6 @@ class PosterFeatureExtractor:
 
                 # 添加batch维度
                 img_tensor = img_tensor.unsqueeze(0)
-
-                if self.use_gpu:
-                    img_tensor = img_tensor.cuda()
 
                 # 提取特征
                 with paddle.no_grad():
