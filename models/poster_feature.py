@@ -77,13 +77,14 @@ class PosterFeatureExtractor:
         self.model.eval()
         print("模型加载完成")
 
-    def extract_poster_features(self, movie_ids, movie_id_to_path):
+    def extract_poster_features(self, movie_ids, movie_id_to_path, batch_size=32):
         """
-        提取指定电影的海报特征
+        提取指定电影的海报特征（批处理版本）
 
         Args:
             movie_ids: 电影ID列表
             movie_id_to_path: 电影ID到海报路径的映射
+            batch_size: 批大小
 
         Returns:
             poster_features: 电影ID到特征的映射
@@ -91,37 +92,85 @@ class PosterFeatureExtractor:
         if self.model is None:
             self.load_model()
 
+        # 过滤有效的电影ID
+        valid_movie_ids = []
+        valid_paths = []
+        for movie_id in movie_ids:
+            poster_path = movie_id_to_path.get(movie_id)
+            if poster_path and os.path.exists(poster_path):
+                valid_movie_ids.append(movie_id)
+                valid_paths.append(poster_path)
+
+        if not valid_movie_ids:
+            return {}, []
+
         poster_features = {}
         missing_posters = []
 
-        print(f"开始提取 {len(movie_ids)} 张海报的特征...")
+        print(f"开始提取 {len(valid_movie_ids)} 张海报的特征 (批大小={batch_size})...")
 
-        for movie_id in tqdm(movie_ids):
-            poster_path = movie_id_to_path.get(movie_id)
-
-            if poster_path is None or not os.path.exists(poster_path):
-                missing_posters.append(movie_id)
-                continue
+        # 批处理提取
+        for i in tqdm(range(0, len(valid_movie_ids), batch_size)):
+            batch_ids = valid_movie_ids[i : i + batch_size]
+            batch_paths = valid_paths[i : i + batch_size]
 
             try:
-                # 加载图片
-                img = Image.open(poster_path).convert("RGB")
-                img_tensor = self.transform(img)
+                # 加载batch图片
+                batch_tensors = []
+                batch_failed = []
 
-                # 添加batch维度
-                img_tensor = img_tensor.unsqueeze(0)
+                for idx, (movie_id, poster_path) in enumerate(
+                    zip(batch_ids, batch_paths)
+                ):
+                    try:
+                        img = Image.open(poster_path).convert("RGB")
+                        img_tensor = self.transform(img)
+                        batch_tensors.append((movie_id, img_tensor))
+                    except Exception as e:
+                        print(f"加载电影 {movie_id} 的海报时出错: {e}")
+                        missing_posters.append(movie_id)
+
+                if not batch_tensors:
+                    continue
+
+                # Stack成batch
+                movie_ids_batch = [x[0] for x in batch_tensors]
+                batch = paddle.stack([x[1] for x in batch_tensors], axis=0)
 
                 # 提取特征
                 with paddle.no_grad():
-                    features = self.model(img_tensor)
+                    features = self.model(batch)
                     features = features.reshape([features.shape[0], -1])
-                    features = features.numpy()[0]  # 获取特征向量
+                    features = features.numpy()
 
-                poster_features[movie_id] = features
+                # 保存结果
+                for idx, movie_id in enumerate(movie_ids_batch):
+                    poster_features[movie_id] = features[idx]
+
+                # 清理GPU内存
+                del batch, features
+                paddle.device.cuda.empty_cache()
 
             except Exception as e:
-                print(f"处理电影 {movie_id} 的海报时出错: {e}")
-                missing_posters.append(movie_id)
+                print(f"处理批次 {i // batch_size} 时出错: {e}")
+                # 回退到逐张处理
+                for movie_id, poster_path in zip(batch_ids, batch_paths):
+                    try:
+                        img = Image.open(poster_path).convert("RGB")
+                        img_tensor = self.transform(img)
+                        img_tensor = img_tensor.unsqueeze(0)
+
+                        with paddle.no_grad():
+                            features = self.model(img_tensor)
+                            features = features.reshape([features.shape[0], -1])
+                            features = features.numpy()[0]
+
+                        poster_features[movie_id] = features
+                        paddle.device.cuda.empty_cache()
+
+                    except Exception as e2:
+                        print(f"处理电影 {movie_id} 的海报时出错: {e2}")
+                        missing_posters.append(movie_id)
 
         print(f"\n特征提取完成:")
         print(f"  - 成功提取: {len(poster_features)} 张")
@@ -251,15 +300,15 @@ def main():
     # 构建海报数据库
     movie_id_to_path = build_poster_database(poster_dir, output_dir, movies_df)
 
-    # 提取特征
+    # 提取特征（使用较小的batch size避免GPU内存问题）
     extractor = PosterFeatureExtractor(poster_dir, output_dir)
     movie_ids = list(movie_id_to_path.keys())
     poster_features, missing = extractor.extract_poster_features(
-        movie_ids, movie_id_to_path
+        movie_ids, movie_id_to_path, batch_size=16
     )
 
     print(f"\n海报特征提取完成！")
-    print(f"缺失率: {len(missing) / len(movie_ids) * 100:.1f}% (低于50%目标)")
+    print(f"缺失率: {len(missing) / len(movie_ids) * 100:.1f}%")
 
 
 if __name__ == "__main__":
