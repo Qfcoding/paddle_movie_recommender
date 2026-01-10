@@ -93,7 +93,7 @@ class NCF(nn.Layer):
         use_features=False,
         use_poster=False,
         num_user_features=4,
-        num_movie_features=20,
+        num_movie_features=19,
         poster_feature_dim=2048,
     ):
         super(NCF, self).__init__()
