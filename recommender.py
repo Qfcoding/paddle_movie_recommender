@@ -242,6 +242,7 @@ class MovieRecommender:
 
         # 保存相似度矩阵
         output_file = os.path.join(self.data_dir, "processed", "user_similarity.pkl")
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
         with open(output_file, "wb") as f:
             pickle.dump(self.user_similarity_matrix, f)
 
@@ -320,6 +321,7 @@ class MovieRecommender:
 
         # 保存相似度矩阵
         output_file = os.path.join(self.data_dir, "processed", "movie_similarity.pkl")
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
         with open(output_file, "wb") as f:
             pickle.dump(self.movie_similarity_matrix, f)
 
