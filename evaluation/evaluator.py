@@ -257,20 +257,18 @@ def evaluate_recommender(
             # 获取推荐列表
             for i in range(len(user_ids)):
                 user_idx = user_ids[i].item()
+                # 注意：movie_features_batch 只有 batch_size 个，不适用于所有电影的排名
+                # 这里简化处理，不使用电影特征进行 top-k 推荐
                 user_recommended = get_top_k_recommendations(
                     model,
                     user_idx,
                     all_items,
                     k=10,
-                    use_features=use_features,
-                    use_poster=use_poster,
-                    user_feature=batch["user_feature"][i] if use_features else None,
-                    movie_features_batch=batch["movie_feature"]
-                    if use_features
-                    else None,
-                    poster_features_batch=batch["poster_feature"]
-                    if use_poster
-                    else None,
+                    use_features=False,  # 暂时不使用特征
+                    use_poster=False,
+                    user_feature=None,
+                    movie_features_batch=None,
+                    poster_features_batch=None,
                 )
                 recommended_items_list.append(user_recommended)
 
