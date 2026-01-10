@@ -77,7 +77,13 @@ class MovieLensDataset(Dataset):
         # 统计信息
         self.n_users = len(self.user_id_map) + 1  # +1 用于padding
         self.n_movies = len(self.movie_id_map) + 1
-        self.n_genres = len([c for c in self.movies.columns if c.startswith("genre_")])
+        self.n_genres = len(
+            [
+                c
+                for c in self.movies.columns
+                if c.startswith("genre_") and c != "genre_list"
+            ]
+        )
 
     def _load_features(self):
         """加载特征数据"""
