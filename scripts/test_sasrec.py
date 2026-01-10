@@ -69,9 +69,10 @@ def test_sasrec():
         print(f"    pos_logits形状: {pos_logits.shape}")
         print(f"    neg_logits形状: {neg_logits.shape}")
 
-        # 测试推理模式
-        final_feat = model(seqs, is_training=False)
-        print(f"  ✓ 推理模式成功, 输出形状: {final_feat.shape}")
+        # 测试推理模式 (使用predict方法)
+        item_indices = list(range(1, dataset.num_items + 1))
+        logits = model.predict(seqs, item_indices)
+        print(f"  ✓ 推理模式成功, 输出形状: {logits.shape}")
 
     except Exception as e:
         print(f"  ✗ 前向传播失败: {e}")
