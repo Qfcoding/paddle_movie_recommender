@@ -1,4 +1,9 @@
-paddlepaddle>=2.0.0
+# 安装说明
+# 本地开发（无CUDA）: pip install -r requirements-cpu.txt
+# 目标环境（有CUDA）: pip install -r requirements-gpu.txt
+
+# 详细说明见 README.md
+
 pandas>=1.0.0
 numpy>=1.19.0
 wget>=3.2
