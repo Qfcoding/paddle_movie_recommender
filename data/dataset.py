@@ -96,7 +96,11 @@ class MovieLensDataset(Dataset):
 
         # 电影特征
         self.movie_features = {}
-        genre_cols = [c for c in self.movies.columns if c.startswith("genre_")]
+        genre_cols = [
+            c
+            for c in self.movies.columns
+            if c.startswith("genre_") and c != "genre_list"
+        ]
 
         for _, row in self.movies.iterrows():
             mid = row["movie_id"]
