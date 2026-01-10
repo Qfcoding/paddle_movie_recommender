@@ -101,13 +101,21 @@ def main():
     print("电影推荐系统 - 模型训练")
     print("=" * 60)
 
-    if args.device == "gpu" and paddle.is_compiled_with_cuda():
-        device = f"gpu:{args.gpu_id}"
-        paddle.set_device(device)
-        print(f"使用GPU设备: {device}")
-    else:
+    # 设置设备
+    try:
+        if (
+            args.device == "gpu"
+            and hasattr(paddle, "is_compiled_with_cuda")
+            and paddle.is_compiled_with_cuda()
+        ):
+            paddle.set_device(f"gpu:{args.gpu_id}")
+            print(f"使用GPU设备: {args.gpu_id}")
+        else:
+            paddle.set_device("cpu")
+            print("使用CPU设备")
+    except Exception:
         paddle.set_device("cpu")
-        print(f"使用CPU设备")
+        print("使用CPU设备")
 
     # 创建数据加载器
     train_loader, test_loader, train_dataset, test_dataset = create_data_loaders(
