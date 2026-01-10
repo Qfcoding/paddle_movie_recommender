@@ -1,0 +1,43 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.pytest_cache
+*.egg-info
+dist
+build
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Data (海报图片太多，运行时从挂载卷读取)
+data/posters/*
+data/ml-1m/*
+!data/ml-1m/README
+
+# Model files (如果存在)
+*.pdparams
+*.pdopt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Large files
+*.zip
+*.tar.gz

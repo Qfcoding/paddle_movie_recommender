@@ -2,26 +2,43 @@
 
 基于PaddlePaddle的个性化电影推荐系统，实现热门推荐、新品推荐、个性化推荐三种推荐路径。
 
-## 功能特性
+## 目录
 
-### 推荐路径
-- **热门推荐**：基于评分频率选择最热门的电影
-- **新品推荐**：基于首映时间推荐最新上映的电影
-- **个性化推荐**：基于NCF模型和用户/电影相似度进行个性化推荐
-
-### 核心特性
-- 支持用户相似度推荐和电影相似度推荐
-- 支持新用户冷启动推荐
-- 集成电影海报特征（Poster）增强推荐效果
-- 完善的评估指标体系（MAE, RMSE, Precision, Recall, NDCG, Coverage, Diversity）
+- [快速开始](#快速开始)
+- [Docker部署](#docker部署)
+- [本地开发](#本地开发)
+- [项目结构](#项目结构)
+- [评估指标](#评估指标)
 
 ## 快速开始
 
-### 1. 环境配置
+### Docker部署（推荐）
 
 ```bash
-# 安装依赖
-pip install -r requirements.txt
+# 1. 构建并运行容器
+docker compose up --build
+
+# 2. 或进入容器交互式使用
+docker run --gpus all --name paddle -it -v $PWD:/app \
+    ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddle:3.2.2-gpu-cuda13.0-cudnn9.13 /bin/bash
+
+# 在容器内运行
+python main.py           # 初始化
+python train.py --epochs=20  # 训练
+python scripts/quick_test.py  # 测试
+```
+
+### 本地开发
+
+```bash
+# CPU版本（本地开发）
+pip install -r requirements-cpu.txt
+
+# GPU版本（需要CUDA环境）
+# 先安装paddlepaddle-gpu
+python -m pip install paddlepaddle-gpu==3.2.2 -i https://www.paddlepaddle.org.cn/packages/stable/cu130/
+# 再安装其他依赖
+pip install -r requirements-gpu.txt
 ```
 
 ### 2. 数据准备
