@@ -1,0 +1,723 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+推荐系统主程序
+包含三种推荐路径：热门推荐、新品推荐、个性化推荐
+支持相似用户和相似电影推荐
+"""
+
+import os
+import sys
+import random
+import pickle
+import numpy as np
+import pandas as pd
+import paddle
+from tqdm import tqdm
+
+# 添加当前目录到路径
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from models.ncf_model import NCF, UserSimilarityModel, MovieSimilarityModel
+from data.dataset import (
+    MovieLensDataset,
+    get_popular_movies,
+    get_new_movies,
+    get_all_movies,
+)
+
+
+class MovieRecommender:
+    """电影推荐系统"""
+
+    def __init__(self, data_dir, model_path=None, use_features=True, use_poster=False):
+        """
+        初始化推荐系统
+
+        Args:
+            data_dir: 数据目录
+            model_path: 模型文件路径
+            use_features: 是否使用特征
+            use_poster: 是否使用海报特征
+        """
+        self.data_dir = data_dir
+        self.use_features = use_features
+        self.use_poster = use_poster
+
+        # 加载数据集信息
+        self._load_dataset_info()
+
+        # 加载模型
+        self.model = None
+        if model_path and os.path.exists(model_path):
+            self.load_model(model_path)
+        else:
+            print("警告: 未加载预训练模型")
+
+        # 加载相似度矩阵
+        self.user_similarity_matrix = None
+        self.movie_similarity_matrix = None
+        self._load_similarity_matrices()
+
+    def _load_dataset_info(self):
+        """加载数据集信息"""
+        print("加载数据集信息...")
+
+        # 加载用户和电影信息
+        self.users = pd.read_csv(os.path.join(self.data_dir, "processed", "users.csv"))
+        self.movies = pd.read_csv(
+            os.path.join(self.data_dir, "processed", "movies.csv")
+        )
+
+        # 构建ID映射
+        self.user_id_map = {
+            uid: idx + 1
+            for idx, uid in enumerate(sorted(self.users["user_id"].unique()))
+        }
+        self.user_id_reverse = {
+            idx + 1: uid
+            for idx, uid in enumerate(sorted(self.users["user_id"].unique()))
+        }
+
+        self.movie_id_map = {
+            mid: idx + 1
+            for idx, mid in enumerate(sorted(self.movies["movie_id"].unique()))
+        }
+        self.movie_id_reverse = {
+            idx + 1: mid
+            for idx, mid in enumerate(sorted(self.movies["movie_id"].unique()))
+        }
+
+        # 统计信息
+        self.n_users = len(self.user_id_map) + 1
+        self.n_movies = len(self.movie_id_map) + 1
+
+        # 加载用户特征
+        self.user_features = {}
+        for _, row in self.users.iterrows():
+            uid = row["user_id"]
+            self.user_features[uid] = {
+                "gender": row["gender_encoded"],
+                "age": row["age"],
+                "occupation": row["occupation"],
+                "zipcode_prefix": int(row["zipcode"][:3])
+                if pd.notna(row["zipcode"])
+                else 0,
+            }
+
+        # 加载电影特征
+        self.movie_features = {}
+        genre_cols = [c for c in self.movies.columns if c.startswith("genre_")]
+        self.n_genres = len(genre_cols)
+
+        for _, row in self.movies.iterrows():
+            mid = row["movie_id"]
+            self.movie_features[mid] = {
+                "release_year": row["release_year"]
+                if pd.notna(row["release_year"])
+                else 1990,
+                "genres": [row[c] for c in genre_cols],
+                "title": row["title"],
+            }
+
+        # 加载海报特征
+        poster_features_file = os.path.join(
+            self.data_dir, "processed", "poster_features.pkl"
+        )
+        if self.use_poster and os.path.exists(poster_features_file):
+            with open(poster_features_file, "rb") as f:
+                self.poster_features = pickle.load(f)
+        else:
+            self.poster_features = {}
+
+        # 加载评分数据
+        self.ratings = pd.read_csv(
+            os.path.join(self.data_dir, "processed", "ratings.csv")
+        )
+
+        # 计算电影流行度（用于热门推荐）
+        self.movie_popularity = self.ratings.groupby("movie_id").size().to_dict()
+
+        # 准备候选电影列表
+        self.popular_movies = get_popular_movies(self.data_dir, top_n=100)
+        self.new_movies = get_new_movies(self.data_dir, top_n=100)
+        self.all_movies = get_all_movies(self.data_dir)
+
+        print(f"数据集信息加载完成: {len(self.users)} 用户, {len(self.movies)} 电影")
+
+    def _load_similarity_matrices(self):
+        """加载相似度矩阵"""
+        similarity_dir = os.path.join(self.data_dir, "processed")
+
+        # 加载用户相似度矩阵
+        user_sim_file = os.path.join(similarity_dir, "user_similarity.pkl")
+        if os.path.exists(user_sim_file):
+            with open(user_sim_file, "rb") as f:
+                self.user_similarity_matrix = pickle.load(f)
+        else:
+            self.user_similarity_matrix = {}
+
+        # 加载电影相似度矩阵
+        movie_sim_file = os.path.join(similarity_dir, "movie_similarity.pkl")
+        if os.path.exists(movie_sim_file):
+            with open(movie_sim_file, "rb") as f:
+                self.movie_similarity_matrix = pickle.load(f)
+        else:
+            self.movie_similarity_matrix = {}
+
+    def load_model(self, model_path):
+        """加载训练好的模型"""
+        print(f"加载模型: {model_path}")
+
+        self.model = NCF(
+            num_users=self.n_users,
+            num_items=self.n_movies,
+            use_features=self.use_features,
+            use_poster=self.use_poster,
+        )
+
+        # 加载权重
+        model_state = paddle.load(model_path)
+        self.model.set_state_dict(model_state)
+        self.model.eval()
+
+        print("模型加载完成")
+
+    def compute_user_similarity(self, method="features"):
+        """
+        计算用户相似度
+
+        Args:
+            method: 'features' 基于用户属性, 'ratings' 基于评分行为
+        """
+        print(f"计算用户相似度 (method={method})...")
+
+        if method == "features":
+            # 基于用户属性的相似度
+            user_ids = list(self.user_features.keys())
+            n_users = len(user_ids)
+
+            similarity_matrix = np.zeros((n_users, n_users))
+
+            for i, uid1 in enumerate(user_ids):
+                for j, uid2 in enumerate(user_ids):
+                    if i == j:
+                        similarity_matrix[i, j] = 1.0
+                    elif i < j:
+                        feat1 = self.user_features[uid1]
+                        feat2 = self.user_features[uid2]
+
+                        # 特征向量
+                        vec1 = np.array(
+                            [
+                                feat1["gender"],
+                                feat1["age"] / 56,
+                                feat1["occupation"] / 20,
+                                feat1["zipcode_prefix"] / 999,
+                            ]
+                        )
+                        vec2 = np.array(
+                            [
+                                feat2["gender"],
+                                feat2["age"] / 56,
+                                feat2["occupation"] / 20,
+                                feat2["zipcode_prefix"] / 999,
+                            ]
+                        )
+
+                        # 余弦相似度
+                        sim = np.dot(vec1, vec2) / (
+                            np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-8
+                        )
+                        similarity_matrix[i, j] = sim
+                        similarity_matrix[j, i] = sim
+
+            # 转换为字典格式
+            self.user_similarity_matrix = {
+                user_ids[i]: {
+                    user_ids[j]: similarity_matrix[i, j] for j in range(n_users)
+                }
+                for i in range(n_users)
+            }
+
+        # 保存相似度矩阵
+        output_file = os.path.join(self.data_dir, "processed", "user_similarity.pkl")
+        with open(output_file, "wb") as f:
+            pickle.dump(self.user_similarity_matrix, f)
+
+        print(f"用户相似度矩阵已保存: {output_file}")
+
+    def compute_movie_similarity(self, method="features"):
+        """
+        计算电影相似度
+
+        Args:
+            method: 'features' 基于内容特征, 'poster' 基于海报特征
+        """
+        print(f"计算电影相似度 (method={method})...")
+
+        movie_ids = list(self.movie_features.keys())
+        n_movies = len(movie_ids)
+        similarity_matrix = np.zeros((n_movies, n_movies))
+
+        for i, mid1 in enumerate(movie_ids):
+            for j, mid2 in enumerate(movie_ids):
+                if i == j:
+                    similarity_matrix[i, j] = 1.0
+                elif i < j:
+                    if method == "features":
+                        # 基于内容特征的相似度
+                        feat1 = self.movie_features[mid1]
+                        feat2 = self.movie_features[mid2]
+
+                        # 年份差异（归一化）
+                        year_diff = (
+                            abs(feat1["release_year"] - feat2["release_year"]) / 50
+                        )
+
+                        # 类型Jaccard相似度
+                        set1 = set(
+                            idx for idx, v in enumerate(feat1["genres"]) if v > 0
+                        )
+                        set2 = set(
+                            idx for idx, v in enumerate(feat2["genres"]) if v > 0
+                        )
+
+                        if len(set1 | set2) > 0:
+                            genre_sim = len(set1 & set2) / len(set1 | set2)
+                        else:
+                            genre_sim = 0
+
+                        # 综合相似度
+                        sim = 0.7 * genre_sim + 0.3 * (1 - year_diff)
+
+                    elif method == "poster" and self.use_poster:
+                        # 基于海报特征的相似度
+                        if (
+                            mid1 in self.poster_features
+                            and mid2 in self.poster_features
+                        ):
+                            vec1 = self.poster_features[mid1]
+                            vec2 = self.poster_features[mid2]
+                            sim = np.dot(vec1, vec2) / (
+                                np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-8
+                            )
+                        else:
+                            sim = 0
+                    else:
+                        sim = 0
+
+                    similarity_matrix[i, j] = sim
+                    similarity_matrix[j, i] = sim
+
+        # 转换为字典格式
+        self.movie_similarity_matrix = {
+            movie_ids[i]: {
+                movie_ids[j]: similarity_matrix[i, j] for j in range(n_movies)
+            }
+            for i in range(n_movies)
+        }
+
+        # 保存相似度矩阵
+        output_file = os.path.join(self.data_dir, "processed", "movie_similarity.pkl")
+        with open(output_file, "wb") as f:
+            pickle.dump(self.movie_similarity_matrix, f)
+
+        print(f"电影相似度矩阵已保存: {output_file}")
+
+    def recommend_popular(self, n=2, exclude_rated=None):
+        """
+        热门推荐
+
+        Args:
+            n: 推荐数量
+            exclude_rated: 需要排除的已评分电影ID列表
+
+        Returns:
+            推荐电影ID列表
+        """
+        if exclude_rated is None:
+            exclude_rated = set()
+
+        # 选择评分次数最多的电影（热门）
+        candidates = [m for m in self.popular_movies if m not in exclude_rated]
+
+        return candidates[:n]
+
+    def recommend_new(self, n=3, exclude_rated=None):
+        """
+        新品推荐
+
+        Args:
+            n: 推荐数量
+            exclude_rated: 需要排除的已评分电影ID列表
+
+        Returns:
+            推荐电影ID列表
+        """
+        if exclude_rated is None:
+            exclude_rated = set()
+
+        # 选择最近上映的电影（新品）
+        candidates = [m for m in self.new_movies if m not in exclude_rated]
+
+        return candidates[:n]
+
+    def recommend_personalized(self, user_id, n=5, method="model"):
+        """
+        个性化推荐
+
+        Args:
+            user_id: 用户ID
+            n: 推荐数量
+            method: 'model' 使用NCF模型, 'user_sim' 基于相似用户, 'movie_sim' 基于相似电影
+
+        Returns:
+            推荐电影ID列表
+        """
+        if method == "model" and self.model is not None:
+            return self._recommend_by_model(user_id, n)
+        elif method == "user_sim":
+            return self._recommend_by_similar_users(user_id, n)
+        elif method == "movie_sim":
+            return self._recommend_by_similar_movies(user_id, n)
+        else:
+            # 默认使用混合方法
+            return self._recommend_hybrid(user_id, n)
+
+    def _recommend_by_model(self, user_id, n=5):
+        """使用NCF模型进行个性化推荐"""
+        if user_id not in self.user_id_map:
+            return []
+
+        user_idx = self.user_id_map[user_id]
+
+        # 排除已评分的电影
+        user_ratings = self.ratings[self.ratings["user_id"] == user_id]
+        rated_movies = set(user_ratings["movie_id"].tolist())
+
+        # 候选电影
+        candidates = [m for m in self.all_movies if m not in rated_movies]
+
+        if len(candidates) == 0:
+            return []
+
+        # 批量预测
+        self.model.eval()
+
+        with paddle.no_grad():
+            user_ids = paddle.full([len(candidates)], user_idx, dtype="int64")
+            movie_idxs = [self.movie_id_map.get(m, 0) for m in candidates]
+            movie_ids = paddle.to_tensor(movie_idxs, dtype="int64")
+
+            # 特征
+            if self.use_features and user_id in self.user_features:
+                ufeat = self.user_features[user_id]
+                user_feature = np.array(
+                    [
+                        ufeat["gender"],
+                        ufeat["age"] / 56,
+                        ufeat["occupation"] / 20,
+                        ufeat["zipcode_prefix"] / 999,
+                    ],
+                    dtype="float32",
+                )
+                user_feature_tensor = paddle.to_tensor(user_feature)
+                user_features = paddle.tile(
+                    user_feature_tensor.unsqueeze(0), [len(candidates), 1]
+                )
+            else:
+                user_features = None
+
+            # 预测
+            if self.use_features and self.use_poster:
+                movie_features_list = []
+                poster_features_list = []
+                for m in candidates:
+                    if m in self.movie_features:
+                        mfeat = self.movie_features[m]
+                        year_norm = (mfeat["release_year"] - 1920) / (2000 - 1920)
+                        movie_features_list.append([year_norm] + mfeat["genres"])
+                    else:
+                        movie_features_list.append([0.5] + [0] * self.n_genres)
+
+                    if m in self.poster_features:
+                        poster_features_list.append(self.poster_features[m])
+                    else:
+                        poster_features_list.append(np.zeros(2048, dtype="float32"))
+
+                movie_features = paddle.to_tensor(
+                    np.stack(movie_features_list), dtype="float32"
+                )
+                poster_features = paddle.to_tensor(
+                    np.stack(poster_features_list), dtype="float32"
+                )
+
+                predictions = self.model(
+                    user_ids, movie_ids, user_features, movie_features, poster_features
+                )
+            elif self.use_features:
+                movie_features_list = []
+                for m in candidates:
+                    if m in self.movie_features:
+                        mfeat = self.movie_features[m]
+                        year_norm = (mfeat["release_year"] - 1920) / (2000 - 1920)
+                        movie_features_list.append([year_norm] + mfeat["genres"])
+                    else:
+                        movie_features_list.append([0.5] + [0] * self.n_genres)
+
+                movie_features = paddle.to_tensor(
+                    np.stack(movie_features_list), dtype="float32"
+                )
+                predictions = self.model(
+                    user_ids, movie_ids, user_features, movie_features
+                )
+            else:
+                predictions = self.model(user_ids, movie_ids)
+
+            predictions = predictions.numpy().flatten()
+
+            # 获取top-n
+            top_indices = np.argsort(predictions)[::-1][:n]
+            recommendations = [candidates[i] for i in top_indices]
+
+        return recommendations
+
+    def _recommend_by_similar_users(self, user_id, n=5):
+        """基于相似用户的推荐"""
+        if user_id not in self.user_similarity_matrix:
+            return []
+
+        # 获取相似用户
+        user_sims = self.user_similarity_matrix[user_id]
+        similar_users = sorted(user_sims.items(), key=lambda x: x[1], reverse=True)[:20]
+
+        # 获取相似用户喜欢的电影
+        user_ratings = self.ratings[self.ratings["user_id"] == user_id]
+        rated_movies = set(user_ratings["movie_id"].tolist())
+
+        movie_scores = {}
+
+        for sim_user, sim_score in similar_users:
+            if sim_score < 0.5:  # 只考虑相似度大于0.5的用户
+                continue
+
+            sim_user_ratings = self.ratings[self.ratings["user_id"] == sim_user]
+            highly_rated = sim_user_ratings[sim_user_ratings["rating"] >= 4]
+
+            for _, row in highly_rated.iterrows():
+                if row["movie_id"] not in rated_movies:
+                    if row["movie_id"] not in movie_scores:
+                        movie_scores[row["movie_id"]] = 0
+                    movie_scores[row["movie_id"]] += sim_score * row["rating"]
+
+        # 排序返回top-n
+        sorted_movies = sorted(movie_scores.items(), key=lambda x: x[1], reverse=True)
+        return [m[0] for m in sorted_movies[:n]]
+
+    def _recommend_by_similar_movies(self, user_id, n=5):
+        """基于相似电影的推荐"""
+        if user_id not in self.user_similarity_matrix:
+            return []
+
+        user_ratings = self.ratings[self.ratings["user_id"] == user_id]
+        highly_rated = user_ratings[user_ratings["rating"] >= 4]["movie_id"].tolist()
+
+        # 获取这些电影相似的电影
+        movie_scores = {}
+
+        for movie_id in highly_rated:
+            if movie_id in self.movie_similarity_matrix:
+                similar_movies = self.movie_similarity_matrix[movie_id]
+                for sim_movie, sim_score in similar_movies.items():
+                    if sim_score < 0.5:  # 只考虑相似度大于0.5的电影
+                        continue
+                    if sim_movie not in movie_scores:
+                        movie_scores[sim_movie] = 0
+                    movie_scores[sim_movie] += sim_score
+
+        # 排序返回top-n
+        sorted_movies = sorted(movie_scores.items(), key=lambda x: x[1], reverse=True)
+        return [m[0] for m in sorted_movies[:n]]
+
+    def _recommend_hybrid(self, user_id, n=5):
+        """混合推荐策略"""
+        # 综合多种方法的结果
+        if self.model is not None:
+            model_recs = self._recommend_by_model(user_id, n)
+        else:
+            model_recs = []
+            print("  提示: 模型未加载，使用基于相似度的推荐")
+
+        user_sim_recs = self._recommend_by_similar_users(user_id, n)
+        movie_sim_recs = self._recommend_by_similar_movies(user_id, n)
+
+        # 合并去重
+        all_recs = list(dict.fromkeys(model_recs + user_sim_recs + movie_sim_recs))
+
+        return all_recs[:n]
+
+    def recommend_cold_start(self, user_features, n=5):
+        """
+        冷启动用户推荐
+
+        Args:
+            user_features: 用户特征字典 {'gender':, 'age':, 'occupation':, 'zipcode_prefix':}
+            n: 推荐数量
+
+        Returns:
+            推荐电影ID列表（混合热门和新品）
+        """
+        # 冷启动用户没有历史记录，返回热门+新品推荐
+        popular_recs = self.recommend_popular(n=2)
+        new_recs = self.recommend_new(n=3)
+
+        return popular_recs + new_recs
+
+    def recommend(self, user_id, n=10, method="hybrid"):
+        """
+        综合推荐接口
+
+        Args:
+            user_id: 用户ID（如果是新用户，使用None或'new_user'）
+            n: 总推荐数量 (默认10条 = 热门2 + 新品3 + 个性化5)
+            method: 'hybrid' 混合推荐, 'popular' 仅热门, 'new' 仅新品, 'personalized' 仅个性化
+
+        Returns:
+            dict: 推荐结果 {
+                'popular': [...],  # 热门推荐 (2条)
+                'new': [...],      # 新品推荐 (3条)
+                'personalized': [...]  # 个性化推荐 (5条)
+            }
+        """
+        # 明确各类型数量: 热门2 + 新品3 + 个性化5 = 10条
+        n_popular = 2
+        n_new = 3
+        n_personalized = n - n_popular - n_new  # 剩余部分
+
+        if user_id is None or user_id == "new_user" or str(user_id).startswith("new_"):
+            # 新用户
+            result = {
+                "popular": self.recommend_popular(n=n_popular),
+                "new": self.recommend_new(n=n_new),
+                "personalized": self.recommend_cold_start({}, n=n_personalized),
+            }
+        else:
+            # 老用户
+            user_id = int(user_id)
+
+            # 获取用户已评分的电影
+            user_ratings = self.ratings[self.ratings["user_id"] == user_id]
+            rated_movies = set(user_ratings["movie_id"].tolist())
+
+            if method == "popular":
+                result = {
+                    "popular": self.recommend_popular(
+                        n=n_popular, exclude_rated=rated_movies
+                    ),
+                    "new": [],
+                    "personalized": [],
+                }
+            elif method == "new":
+                result = {
+                    "popular": [],
+                    "new": self.recommend_new(n=n_new, exclude_rated=rated_movies),
+                    "personalized": [],
+                }
+            elif method == "personalized":
+                result = {
+                    "popular": [],
+                    "new": [],
+                    "personalized": self.recommend_personalized(
+                        user_id, n=n_personalized
+                    ),
+                }
+            else:  # hybrid
+                result = {
+                    "popular": self.recommend_popular(
+                        n=n_popular, exclude_rated=rated_movies
+                    ),
+                    "new": self.recommend_new(n=n_new, exclude_rated=rated_movies),
+                    "personalized": self.recommend_personalized(
+                        user_id, n=n_personalized
+                    ),
+                }
+
+        return result
+
+    def get_recommendation_details(self, recommendations):
+        """
+        获取推荐的详细信息
+
+        Args:
+            recommendations: 推荐结果字典
+
+        Returns:
+            详细信息字典
+        """
+        details = {}
+
+        for rec_type, movie_ids in recommendations.items():
+            details[rec_type] = []
+            for mid in movie_ids:
+                if mid in self.movie_features:
+                    info = self.movie_features[mid].copy()
+                    info["movie_id"] = mid
+                    info["popularity"] = self.movie_popularity.get(mid, 0)
+                    details[rec_type].append(info)
+
+        return details
+
+
+def main():
+    """主函数 - 测试推荐系统"""
+    # 配置
+    data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    model_path = os.path.join(data_dir, "models", "ncf_model.pdparams")
+
+    # 创建推荐系统
+    recommender = MovieRecommender(
+        data_dir=data_dir, model_path=model_path, use_features=True, use_poster=True
+    )
+
+    # 测试用户
+    test_user_id = 1
+
+    print("\n" + "=" * 60)
+    print(f"为用户 {test_user_id} 生成推荐")
+    print("=" * 60)
+
+    # 综合推荐
+    recommendations = recommender.recommend(test_user_id, n=10, method="hybrid")
+
+    # 显示推荐结果
+    print("\n推荐结果:")
+    print(f"热门推荐 (2条): {recommendations['popular']}")
+    print(f"新品推荐 (3条): {recommendations['new']}")
+    print(f"个性化推荐 (5条): {recommendations['personalized']}")
+
+    # 获取详细信息
+    details = recommender.get_recommendation_details(recommendations)
+
+    print("\n推荐详情:")
+    for rec_type, movies in details.items():
+        print(f"\n{rec_type}:")
+        for movie in movies[:3]:  # 只显示前3条
+            print(
+                f"  - {movie['title']} ({movie['release_year']}) - 类型: {movie['genres']}"
+            )
+
+    # 测试新用户推荐
+    print("\n" + "=" * 60)
+    print("新用户推荐测试")
+    print("=" * 60)
+
+    new_user_recs = recommender.recommend("new_user", n=10)
+    print(f"\n新用户推荐结果:")
+    print(f"热门推荐 (2条): {new_user_recs['popular']}")
+    print(f"新品推荐 (3条): {new_user_recs['new']}")
+    print(f"个性化推荐 (5条): {new_user_recs['personalized']}")
+
+
+if __name__ == "__main__":
+    main()
