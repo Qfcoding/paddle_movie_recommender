@@ -80,26 +80,21 @@ def train(sampler, model, args, num_batch, dataset):
             optim.step()
             optim.clear_grad()
 
-            # validation
-            if (
-                tot_batch >= args.val_start_batch
-                and tot_batch % args.val_interval == 0
-                and i_batch != 0
-            ):
-                valid_pair = evaluate(dataset, model, epoch, i_batch, args, is_val=True)
-                if best_pair is None or valid_pair > best_pair:
-                    best_pair = valid_pair
-                    file_path = "%s/SASRec_best.pth.tar" % (args.save_folder)
-                    print("=> found better validated model, saving to %s" % file_path)
-                    save_checkpoint(
-                        model,
-                        {
-                            "epoch": epoch,
-                            "optimizer": optim.state_dict(),
-                            "best_pair": best_pair,
-                        },
-                        file_path,
-                    )
+        # validation at end of each epoch
+        valid_pair = evaluate(dataset, model, epoch, num_batch, args, is_val=True)
+        if best_pair is None or valid_pair > best_pair:
+            best_pair = valid_pair
+            file_path = "%s/SASRec_best.pth.tar" % (args.save_folder)
+            print("=> found better validated model, saving to %s" % file_path)
+            save_checkpoint(
+                model,
+                {
+                    "epoch": epoch,
+                    "optimizer": optim.state_dict(),
+                    "best_pair": best_pair,
+                },
+                file_path,
+            )
 
         print(
             "Epoch {:3} - loss: {:.4f}  lr: {:.5f}".format(
