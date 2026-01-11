@@ -19,6 +19,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from models.ncf_model import NCF, UserSimilarityModel, MovieSimilarityModel
+from models.sasrec_model import SASRec
 from data.dataset import (
     MovieLensDataset,
     get_popular_movies,
@@ -30,13 +31,21 @@ from data.dataset import (
 class MovieRecommender:
     """电影推荐系统"""
 
-    def __init__(self, data_dir, model_path=None, use_features=True, use_poster=False):
+    def __init__(
+        self,
+        data_dir,
+        model_path=None,
+        sasrec_model_path=None,
+        use_features=True,
+        use_poster=False,
+    ):
         """
         初始化推荐系统
 
         Args:
             data_dir: 数据目录
-            model_path: 模型文件路径
+            model_path: NCF模型文件路径
+            sasrec_model_path: SASRec模型文件路径
             use_features: 是否使用特征
             use_poster: 是否使用海报特征
         """
@@ -47,12 +56,24 @@ class MovieRecommender:
         # 加载数据集信息
         self._load_dataset_info()
 
-        # 加载模型
+        # 加载NCF模型
         self.model = None
         if model_path and os.path.exists(model_path):
             self.load_model(model_path)
         else:
-            print("警告: 未加载预训练模型")
+            print("警告: 未加载NCF预训练模型")
+
+        # 加载SASRec模型
+        self.sasrec_model = None
+        self.sasrec_max_len = 50
+        if sasrec_model_path and os.path.exists(sasrec_model_path):
+            self.load_sasrec_model(sasrec_model_path)
+        else:
+            print("警告: 未加载SASRec预训练模型")
+
+        # 构建用户交互序列（用于SASRec）
+        self.user_sequences = {}
+        self._build_user_sequences()
 
         # 加载相似度矩阵
         self.user_similarity_matrix = None
@@ -107,7 +128,11 @@ class MovieRecommender:
 
         # 加载电影特征
         self.movie_features = {}
-        genre_cols = [c for c in self.movies.columns if c.startswith("genre_") and c != "genre_list"]
+        genre_cols = [
+            c
+            for c in self.movies.columns
+            if c.startswith("genre_") and c != "genre_list"
+        ]
         self.n_genres = len(genre_cols)
 
         for _, row in self.movies.iterrows():
@@ -166,8 +191,8 @@ class MovieRecommender:
             self.movie_similarity_matrix = {}
 
     def load_model(self, model_path):
-        """加载训练好的模型"""
-        print(f"加载模型: {model_path}")
+        """加载训练好的NCF模型"""
+        print(f"加载NCF模型: {model_path}")
 
         self.model = NCF(
             num_users=self.n_users,
@@ -176,12 +201,43 @@ class MovieRecommender:
             use_poster=self.use_poster,
         )
 
-        # 加载权重
         model_state = paddle.load(model_path)
         self.model.set_state_dict(model_state)
         self.model.eval()
 
-        print("模型加载完成")
+        print("NCF模型加载完成")
+
+    def load_sasrec_model(self, model_path):
+        """加载训练好的SASRec模型"""
+        print(f"加载SASRec模型: {model_path}")
+
+        self.sasrec_model = SASRec(
+            item_num=self.n_movies,
+            max_len=self.sasrec_max_len,
+            hidden_units=64,
+            num_heads=2,
+            num_blocks=2,
+            dropout_rate=0.5,
+        )
+
+        model_state = paddle.load(model_path)
+        self.sasrec_model.set_state_dict(model_state)
+        self.sasrec_model.eval()
+
+        print("SASRec模型加载完成")
+
+    def _build_user_sequences(self):
+        """构建用户交互序列（用于SASRec）"""
+        print("构建用户交互序列...")
+
+        ratings = self.ratings.sort_values("timestamp")
+
+        for user_id in self.ratings["user_id"].unique():
+            user_ratings = self.ratings[self.ratings["user_id"] == user_id]
+            sequence = user_ratings["movie_id"].tolist()
+            self.user_sequences[user_id] = sequence
+
+        print(f"用户交互序列构建完成: {len(self.user_sequences)} 用户")
 
     def compute_user_similarity(self, method="features"):
         """
@@ -388,19 +444,20 @@ class MovieRecommender:
         Args:
             user_id: 用户ID
             n: 推荐数量
-            method: 'model' 使用NCF模型, 'user_sim' 基于相似用户, 'movie_sim' 基于相似电影
+            method: 'model' 使用NCF模型, 'user_sim' 基于相似用户, 'movie_sim' 基于相似电影, 'sasrec' 使用SASRec序列推荐
 
         Returns:
             推荐电影ID列表
         """
         if method == "model" and self.model is not None:
             return self._recommend_by_model(user_id, n)
+        elif method == "sasrec" and self.sasrec_model is not None:
+            return self._recommend_by_sasrec(user_id, n)
         elif method == "user_sim":
             return self._recommend_by_similar_users(user_id, n)
         elif method == "movie_sim":
             return self._recommend_by_similar_movies(user_id, n)
         else:
-            # 默认使用混合方法
             return self._recommend_hybrid(user_id, n)
 
     def _recommend_by_model(self, user_id, n=5):
@@ -558,20 +615,76 @@ class MovieRecommender:
         sorted_movies = sorted(movie_scores.items(), key=lambda x: x[1], reverse=True)
         return [m[0] for m in sorted_movies[:n]]
 
+    def _recommend_by_sasrec(self, user_id, n=5):
+        """使用SASRec模型进行序列推荐"""
+        if self.sasrec_model is None:
+            print("警告: SASRec模型未加载")
+            return []
+
+        if user_id not in self.user_sequences:
+            return []
+
+        user_history = self.user_sequences[user_id]
+
+        user_ratings = self.ratings[self.ratings["user_id"] == user_id]
+        rated_movies = set(user_ratings["movie_id"].tolist())
+
+        candidates = [m for m in self.all_movies if m not in rated_movies]
+
+        if len(candidates) == 0:
+            return []
+
+        self.sasrec_model.eval()
+
+        with paddle.no_grad():
+            max_len = self.sasrec_max_len
+            if len(user_history) > max_len:
+                seq = user_history[-max_len:]
+            else:
+                seq = [0] * (max_len - len(user_history)) + user_history
+
+            seq_tensor = paddle.to_tensor([seq], dtype="int64")
+            item_indices = [self.movie_id_map.get(m, 0) for m in candidates]
+
+            logits = self.sasrec_model.predict(seq_tensor, item_indices)
+            logits = logits.numpy()[0]
+
+            sorted_indices = np.argsort(-logits)
+            recommendations = [candidates[i] for i in sorted_indices[:n]]
+
+        return recommendations
+
     def _recommend_hybrid(self, user_id, n=5):
-        """混合推荐策略"""
-        # 综合多种方法的结果
+        """混合推荐策略 - 综合NCF、SASRec、相似用户、相似电影"""
+        model_recs = []
+        sasrec_recs = []
+        user_sim_recs = []
+        movie_sim_recs = []
+
         if self.model is not None:
             model_recs = self._recommend_by_model(user_id, n)
         else:
-            model_recs = []
-            print("  提示: 模型未加载，使用基于相似度的推荐")
+            print("  提示: NCF模型未加载")
 
-        user_sim_recs = self._recommend_by_similar_users(user_id, n)
-        movie_sim_recs = self._recommend_by_similar_movies(user_id, n)
+        if self.sasrec_model is not None:
+            sasrec_recs = self._recommend_by_sasrec(user_id, n)
+        else:
+            print("  提示: SASRec模型未加载")
 
-        # 合并去重
-        all_recs = list(dict.fromkeys(model_recs + user_sim_recs + movie_sim_recs))
+        if self.user_similarity_matrix:
+            user_sim_recs = self._recommend_by_similar_users(user_id, n)
+        else:
+            print("  提示: 用户相似度矩阵未加载")
+
+        if self.movie_similarity_matrix:
+            movie_sim_recs = self._recommend_by_similar_movies(user_id, n)
+        else:
+            print("  提示: 电影相似度矩阵未加载")
+
+        # 合并去重（顺序：NCF > SASRec > 相似用户 > 相似电影）
+        all_recs = list(
+            dict.fromkeys(model_recs + sasrec_recs + user_sim_recs + movie_sim_recs)
+        )
 
         return all_recs[:n]
 
@@ -689,52 +802,82 @@ class MovieRecommender:
 
 def main():
     """主函数 - 测试推荐系统"""
-    # 配置
-    data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    model_path = os.path.join(data_dir, "models", "ncf_model.pdparams")
+    import argparse
 
-    # 创建推荐系统
-    recommender = MovieRecommender(
-        data_dir=data_dir, model_path=model_path, use_features=True, use_poster=True
+    parser = argparse.ArgumentParser(description="电影推荐系统")
+    parser.add_argument("--data_dir", type=str, default=None, help="数据目录")
+    parser.add_argument("--model_path", type=str, default=None, help="NCF模型文件路径")
+    parser.add_argument(
+        "--sasrec_model_path", type=str, default=None, help="SASRec模型文件路径"
+    )
+    parser.add_argument("--use_poster", action="store_true", help="是否使用海报特征")
+    args = parser.parse_args()
+
+    # 如果未指定data_dir，使用脚本所在目录
+    if args.data_dir is None:
+        data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    else:
+        data_dir = args.data_dir
+
+    ncf_model_path = (
+        args.model_path
+        if args.model_path
+        else os.path.join(data_dir, "models", "ncf_model.pdparams")
+    )
+    sasrec_model_path = (
+        args.sasrec_model_path
+        if args.sasrec_model_path
+        else os.path.join(data_dir, "models", "sasrec_model.pdparams")
     )
 
-    # 测试用户
+    print("=" * 60)
+    print("电影推荐系统 - SASRec集成测试")
+    print("=" * 60)
+
+    print("\n[1/4] 初始化推荐系统...")
+    recommender = MovieRecommender(
+        data_dir=data_dir,
+        model_path=ncf_model_path,
+        sasrec_model_path=sasrec_model_path,
+        use_features=True,
+        use_poster=args.use_poster,
+    )
+    print(f"  用户数: {recommender.n_users}")
+    print(f"  电影数: {recommender.n_movies}")
+    print(f"  SASRec模型: {'已加载' if recommender.sasrec_model else '未加载'}")
+
     test_user_id = 1
 
-    print("\n" + "=" * 60)
-    print(f"为用户 {test_user_id} 生成推荐")
-    print("=" * 60)
+    print(f"\n[2/4] 测试不同推荐方法 (用户 {test_user_id})...")
+    print("\nNCF模型推荐:")
+    ncf_recs = recommender._recommend_by_model(test_user_id, 5)
+    print(f"  推荐电影: {ncf_recs}")
 
-    # 综合推荐
+    print("\nSASRec序列推荐:")
+    sasrec_recs = recommender._recommend_by_sasrec(test_user_id, 5)
+    print(f"  推荐电影: {sasrec_recs}")
+
+    print("\n[3/4] 测试综合推荐...")
     recommendations = recommender.recommend(test_user_id, n=10, method="hybrid")
+    print(f"\n综合推荐结果:")
+    print(f"  热门推荐: {len(recommendations['popular'])} 条")
+    print(f"  新品推荐: {len(recommendations['new'])} 条")
+    print(f"  个性化推荐: {len(recommendations['personalized'])} 条")
 
-    # 显示推荐结果
-    print("\n推荐结果:")
-    print(f"热门推荐 (2条): {recommendations['popular']}")
-    print(f"新品推荐 (3条): {recommendations['new']}")
-    print(f"个性化推荐 (5条): {recommendations['personalized']}")
-
-    # 获取详细信息
+    print("\n[4/4] 显示推荐详情...")
     details = recommender.get_recommendation_details(recommendations)
+    movies_df = pd.read_csv(os.path.join(data_dir, "processed", "movies.csv"))
 
-    print("\n推荐详情:")
-    for rec_type, movies in details.items():
-        print(f"\n{rec_type}:")
-        for movie in movies[:3]:  # 只显示前3条
-            print(
-                f"  - {movie['title']} ({movie['release_year']}) - 类型: {movie['genres']}"
-            )
+    print("\n个性化推荐电影:")
+    for mid in recommendations["personalized"][:5]:
+        movie_info = movies_df[movies_df["movie_id"] == mid]
+        if not movie_info.empty:
+            title = movie_info.iloc[0]["title"]
+            print(f"  - {title}")
 
-    # 测试新用户推荐
     print("\n" + "=" * 60)
-    print("新用户推荐测试")
+    print("测试完成！")
     print("=" * 60)
-
-    new_user_recs = recommender.recommend("new_user", n=10)
-    print(f"\n新用户推荐结果:")
-    print(f"热门推荐 (2条): {new_user_recs['popular']}")
-    print(f"新品推荐 (3条): {new_user_recs['new']}")
-    print(f"个性化推荐 (5条): {new_user_recs['personalized']}")
 
 
 if __name__ == "__main__":

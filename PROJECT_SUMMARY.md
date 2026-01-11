@@ -39,7 +39,7 @@ paddle_movie_recommender/
 | **新品推荐** | ✅ 实现 | 基于首映时间推荐新电影 |
 | **个性化推荐** | ✅ 实现 | 基于NCF模型进行个性化推荐 |
 | **SASRec序列推荐** | ✅ 实现 | 基于Transformer的序列推荐 |
-| **混合推荐** | ✅ 实现 | 按2:3:5比例混合三种推荐 |
+| **混合推荐** | ✅ 实现 | 按2:2:3:3比例混合NCF、SASRec、相似用户、相似电影四种推荐 |
 | **相似用户推荐** | ✅ 实现 | 基于用户特征的余弦相似度 |
 | **相似电影推荐** | ✅ 实现 | 基于内容和海报的相似度 |
 | **新用户冷启动** | ✅ 实现 | 热门+新品混合推荐 |
@@ -95,7 +95,15 @@ python train_sasrec.py --epochs 20 --batch_size 64 --max_len 50
 ### 4. 测试推荐
 
 ```bash
+# 测试NCF和SASRec推荐
 python recommender.py
+
+# 快速测试（推荐方法对比）
+python scripts/quick_test.py
+
+# SASRec模型测试
+python models/sasrec_model.py
+python data/sequence_dataset.py
 ```
 
 ### 5. SASRec模型测试
@@ -152,6 +160,10 @@ SASRec (Self-Attentive Sequential Recommendation)
 ├── 热门推荐: 2条 (20%)
 ├── 新品推荐: 3条 (30%)
 └── 个性化推荐: 5条 (50%)
+    ├── NCF推荐: 2条 (优先)
+    ├── SASRec推荐: 1条
+    ├── 相似用户推荐: 1条
+    └── 相似电影推荐: 1条
 ```
 
 ## 五、评估指标说明

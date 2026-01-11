@@ -22,44 +22,39 @@ def test_recommender():
     print("电影推荐系统 - 快速测试")
     print("=" * 60)
 
-    # 项目根目录
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     data_dir = os.path.join(project_dir, "data")
 
-    # 创建推荐系统 (不使用海报特征，本地无GPU)
-    print("\n[1/4] 初始化推荐系统...")
+    print("\n[1/5] 初始化推荐系统...")
+    sasrec_model_path = os.path.join(project_dir, "models", "sasrec_model.pdparams")
+    ncf_model_path = os.path.join(project_dir, "models", "ncf_model.pdparams")
+
     recommender = MovieRecommender(
         data_dir=data_dir,
+        model_path=ncf_model_path,
+        sasrec_model_path=sasrec_model_path,
         use_features=True,
-        use_poster=False,  # 本地无GPU，跳过海报
+        use_poster=False,
     )
     print(f"  用户数: {recommender.n_users}")
     print(f"  电影数: {recommender.n_movies}")
 
-    # 测试用户1
     test_user_id = 1
-    print(f"\n[2/4] 为用户 {test_user_id} 生成推荐...")
+    print(f"\n[2/5] 为用户 {test_user_id} 生成推荐...")
 
-    # 综合推荐 - 使用相似用户方法（不需要相似度矩阵）
     recommendations = {
         "popular": recommender.recommend_popular(n=2),
         "new": recommender.recommend_new(n=3),
-        "personalized": recommender._recommend_by_similar_users(test_user_id, 5),
+        "personalized_ncf": recommender._recommend_by_model(test_user_id, 5),
+        "personalized_sasrec": recommender._recommend_by_sasrec(test_user_id, 5),
     }
 
-    # 验证推荐数量
-    n_popular = len(recommendations["popular"])
-    n_new = len(recommendations["new"])
-    n_personalized = len(recommendations["personalized"])
-    total = n_popular + n_new + n_personalized
-
     print(f"\n推荐结果验证:")
-    print(f"  热门推荐: {n_popular} 条 (目标: 2条)")
-    print(f"  新品推荐: {n_new} 条 (目标: 3条)")
-    print(f"  个性化推荐: {n_personalized} 条 (目标: 5条)")
-    print(f"  总计: {total} 条")
+    print(f"  热门推荐: {len(recommendations['popular'])} 条")
+    print(f"  新品推荐: {len(recommendations['new'])} 条")
+    print(f"  NCF个性化推荐: {len(recommendations['personalized_ncf'])} 条")
+    print(f"  SASRec序列推荐: {len(recommendations['personalized_sasrec'])} 条")
 
-    # 显示推荐电影
     print(f"\n推荐详情:")
     movies_df = pd.read_csv(os.path.join(data_dir, "processed", "movies.csv"))
 
@@ -67,34 +62,46 @@ def test_recommender():
         if not movie_ids:
             continue
         print(f"\n【{rec_type}】")
-        for mid in movie_ids[:3]:  # 只显示前3条
+        for mid in movie_ids[:3]:
             movie_info = movies_df[movies_df["movie_id"] == mid]
             if not movie_info.empty:
                 title = movie_info.iloc[0]["title"]
                 year = movie_info.iloc[0]["release_year"]
                 print(f"  - {title} ({year})")
 
-    # 测试新用户
-    print(f"\n[3/4] 测试新用户推荐...")
+    print(f"\n[3/5] 测试不同推荐方法...")
+    methods = ["model", "sasrec", "user_sim", "movie_sim"]
+    for method in methods:
+        if method == "model":
+            recs = recommender.recommend_personalized(test_user_id, n=3, method="model")
+        elif method == "sasrec":
+            recs = recommender.recommend_personalized(
+                test_user_id, n=3, method="sasrec"
+            )
+        elif method == "user_sim":
+            recs = recommender.recommend_personalized(
+                test_user_id, n=3, method="user_sim"
+            )
+        else:
+            recs = recommender.recommend_personalized(
+                test_user_id, n=3, method="movie_sim"
+            )
+        print(f"  {method}: {len(recs)} 条推荐")
+
+    print(f"\n[4/5] 测试新用户推荐...")
     new_user_recs = recommender.recommend("new_user", n=10)
     print(
         f"  新用户推荐: {len(new_user_recs['popular'])} 热门 + {len(new_user_recs['new'])} 新品 + {len(new_user_recs['personalized'])} 个性化"
     )
 
-    # 评估
-    print(f"\n[4/4] 评估模型性能...")
-
-    # 加载测试数据
+    print(f"\n[5/5] 评估模型性能...")
     test_data = pd.read_csv(os.path.join(data_dir, "processed", "test_ratings.csv"))
-
-    # 使用简单评估: 计算测试集上的MAE
-    y_true = test_data["rating"].values[:100]  # 只用前100条
+    y_true = test_data["rating"].values[:100]
     y_pred = []
 
     for _, row in test_data.head(100).iterrows():
         user_id = row["user_id"]
         movie_id = row["movie_id"]
-        # 简单预测: 用户平均评分 + 电影平均评分 - 全局平均
         user_ratings = recommender.ratings[recommender.ratings["user_id"] == user_id]
         movie_ratings = recommender.ratings[recommender.ratings["movie_id"] == movie_id]
 
