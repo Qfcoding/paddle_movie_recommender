@@ -752,12 +752,29 @@ class MovieRecommender:
         else:
             print("  提示: 电影相似度矩阵未加载")
 
-        # 合并去重（顺序：NCF > SASRec > 相似用户 > 相似电影）
-        all_recs = list(
-            dict.fromkeys(model_recs + sasrec_recs + user_sim_recs + movie_sim_recs)
-        )
+        # 合并去重（交替混合：NCF 1个, SASRec 1个, NCF 1个, SASRec 1个... 确保各方法均衡）
+        all_recs = []
+        seen = set()
+        methods = [
+            (model_recs, "NCF"),
+            (sasrec_recs, "SASRec"),
+            (user_sim_recs, "相似用户"),
+            (movie_sim_recs, "相似电影"),
+        ]
 
-        return all_recs[:n]
+        # 循环遍历所有方法，轮流添加
+        max_len = max(len(recs) for recs, _ in methods)
+        for i in range(max_len):
+            for recs, name in methods:
+                if i < len(recs) and recs[i] not in seen:
+                    all_recs.append(recs[i])
+                    seen.add(recs[i])
+                if len(all_recs) >= n:
+                    break
+            if len(all_recs) >= n:
+                break
+
+        return all_recs
 
     def recommend_cold_start(self, user_features, n=5):
         """
