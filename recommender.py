@@ -201,25 +201,24 @@ class MovieRecommender:
 
         model_state = paddle.load(model_path)
 
-        # 从保存的模型权重推断维度
-        gmf_weight_shape = model_state.get(
-            "gmf.item_embed.weight", model_state.get("gmf.user_embed.weight")
-        ).shape
-        gmf_embed_dim = gmf_weight_shape[1] if len(gmf_weight_shape) > 1 else 32
-
-        mlp_weight_shape = model_state.get(
-            "mlp.mlp.0.weight", model_state.get("mlp.user_embed.weight")
-        ).shape
-        mlp_embed_dim = mlp_weight_shape[1] if len(mlp_weight_shape) > 1 else 32
-
-        fusion_weight_shape = model_state.get("fusion.0.weight")
-        fusion_input_dim = (
-            fusion_weight_shape.shape[0] if fusion_weight_shape is not None else 40
+        gmf_weight = model_state.get("gmf.user_embed.weight")
+        gmf_embed_dim = (
+            gmf_weight.shape[1]
+            if gmf_weight is not None and len(gmf_weight.shape) > 1
+            else 32
         )
 
-        # 计算特征维度
-        mlp_layers = [64, 32, 16]
-        mlp_output_dim = mlp_layers[-1]
+        mlp_weight = model_state.get("mlp.user_embed.weight")
+        mlp_embed_dim = (
+            mlp_weight.shape[1]
+            if mlp_weight is not None and len(mlp_weight.shape) > 1
+            else 32
+        )
+
+        fusion_weight = model_state.get("fusion.0.weight")
+        fusion_input_dim = fusion_weight.shape[0] if fusion_weight is not None else 40
+
+        mlp_output_dim = 16  # 最后一层输出是16
         gmf_output_dim = 1
 
         base_dim = gmf_output_dim + mlp_output_dim
@@ -233,7 +232,7 @@ class MovieRecommender:
         else:
             num_features = 0
 
-        num_movie_features = num_features - 4  # 减去用户特征4维
+        num_movie_features = num_features - 4
 
         print(
             f"  自适应维度: gmf_embed={gmf_embed_dim}, mlp_embed={mlp_embed_dim}, movie_features={num_movie_features}"
