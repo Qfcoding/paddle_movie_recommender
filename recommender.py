@@ -209,25 +209,39 @@ class MovieRecommender:
         print("NCF模型加载完成")
 
     def load_sasrec_model(self, model_path):
-        """加载训练好的SASRec模型"""
+        """加载训练好的SASRec模型（自适应超参）"""
         print(f"加载SASRec模型: {model_path}")
 
-        self.sasrec_model = SASRec(
-            item_num=self.n_movies,
-            max_len=self.sasrec_max_len,
-            hidden_units=64,
-            num_heads=2,
-            num_blocks=2,
-            dropout_rate=0.5,
-        )
-
         checkpoint = paddle.load(model_path)
+
         if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
             model_state = checkpoint["state_dict"]
             print(f"  从checkpoint加载，epoch: {checkpoint.get('epoch', 'N/A')}")
         else:
             model_state = checkpoint
 
+        hidden_units = model_state["item_emb.weight"].shape[1]
+        max_len = model_state["pos_emb.weight"].shape[0]
+        num_heads = (
+            model_state["encoder_layer.self_attn.q_proj.weight"].shape[0]
+            // hidden_units
+        )
+        dropout_rate = 0.5
+
+        print(
+            f"  自适应超参: hidden_units={hidden_units}, max_len={max_len}, num_heads={num_heads}"
+        )
+
+        self.sasrec_model = SASRec(
+            item_num=self.n_movies,
+            max_len=max_len,
+            hidden_units=hidden_units,
+            num_heads=num_heads,
+            num_blocks=2,
+            dropout_rate=dropout_rate,
+        )
+
+        self.sasrec_max_len = max_len
         self.sasrec_model.set_state_dict(model_state)
         self.sasrec_model.eval()
 
