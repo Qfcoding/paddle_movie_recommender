@@ -838,13 +838,11 @@ def main():
         args.sasrec_model_path
         if args.sasrec_model_path
         else os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            os.path.dirname(os.path.abspath(__file__)),
             "models",
             "SASRec_best.pth.tar",
         )
     )
-    print(f"  SASRec模型路径: {sasrec_model_path}")
-    print(f"  SASRec模型存在: {os.path.exists(sasrec_model_path)}")
 
     print("=" * 60)
     print("电影推荐系统 - SASRec集成测试")
