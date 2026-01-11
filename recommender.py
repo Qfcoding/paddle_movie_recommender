@@ -739,18 +739,25 @@ class MovieRecommender:
 
         if self.sasrec_model is not None:
             sasrec_recs = self._recommend_by_sasrec(user_id, candidate_n)
+            print(f"  SASRec候选: {len(sasrec_recs)} 条")
         else:
             print("  提示: SASRec模型未加载")
 
         if self.user_similarity_matrix:
             user_sim_recs = self._recommend_by_similar_users(user_id, candidate_n)
+            print(f"  相似用户候选: {len(user_sim_recs)} 条")
         else:
             print("  提示: 用户相似度矩阵未加载")
 
         if self.movie_similarity_matrix:
             movie_sim_recs = self._recommend_by_similar_movies(user_id, candidate_n)
+            print(f"  相似电影候选: {len(movie_sim_recs)} 条")
         else:
             print("  提示: 电影相似度矩阵未加载")
+
+        print(
+            f"  合并前: NCF={len(model_recs)}, SASRec={len(sasrec_recs)}, 相似用户={len(user_sim_recs)}, 相似电影={len(movie_sim_recs)}"
+        )
 
         # 合并去重（交替混合：NCF 1个, SASRec 1个, NCF 1个, SASRec 1个... 确保各方法均衡）
         all_recs = []
