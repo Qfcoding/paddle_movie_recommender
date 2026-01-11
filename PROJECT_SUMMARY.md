@@ -207,6 +207,7 @@ SASRec (Self-Attentive Sequential Recommendation)
 3. **首次运行**：需要下载约200MB的数据，请耐心等待
 4. **Python版本**：推荐使用Python 3.9，3.14+可能不兼容PaddlePaddle
 5. **SASRec训练**：建议20+ epochs以获得更好的性能
+6. **Git管理**：训练生成的文件（sasrec_data.txt等）已加入.gitignore，请勿提交到git
 
 ## 九、参考文档
 

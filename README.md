@@ -184,6 +184,17 @@ new_user_recs = recommender.recommend('new_user', n=10)
 | movie_sim | 相似电影推荐 | 基于内容相似的协同过滤 |
 | hybrid | 混合推荐 | 综合多种方法的最优推荐 |
 
+## Git管理
+
+训练生成的文件已加入 `.gitignore`，包括：
+- `*.pdparams` - 模型参数文件
+- `data/processed/*.pkl` - 处理后的数据文件
+- `data/processed/*.txt` - 序列数据文件
+- `__pycache__/` - Python缓存文件
+- `*.log` - 日志文件
+
+请勿将这些文件提交到git仓库。
+
 ## 海报特征影响验证
 
 系统支持验证电影海报特征对推荐结果的影响：
