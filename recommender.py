@@ -854,7 +854,7 @@ class MovieRecommender:
                     "popular": [],
                     "new": [],
                     "personalized": self.recommend_personalized(
-                        user_id, n=n_personalized
+                        user_id, n=n_personalized, method="hybrid"
                     ),
                 }
             else:  # hybrid
@@ -864,7 +864,7 @@ class MovieRecommender:
                     ),
                     "new": self.recommend_new(n=n_new, exclude_rated=rated_movies),
                     "personalized": self.recommend_personalized(
-                        user_id, n=n_personalized
+                        user_id, n=n_personalized, method="hybrid"
                     ),
                 }
 
