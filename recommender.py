@@ -13,6 +13,10 @@ import pickle
 import numpy as np
 import pandas as pd
 import paddle
+import logging
+
+logging.getLogger("paddle").setLevel(logging.WARNING)
+logging.getLogger("paddle").propagate = False
 
 from tqdm import tqdm
 
@@ -876,14 +880,31 @@ def main():
 
     test_user_id = 1
 
-    print(f"\n[2/4] 测试不同推荐方法 (用户 {test_user_id})...")
+    print("\n[2/4] 测试不同推荐方法 (用户 {test_user_id})...")
+
+    movies_df = pd.read_csv(os.path.join(data_dir, "processed", "movies.csv"))
+
+    def movie_id_to_title(movie_ids):
+        titles = []
+        for mid in movie_ids:
+            movie_info = movies_df[movies_df["movie_id"] == mid]
+            if not movie_info.empty:
+                titles.append(movie_info.iloc[0]["title"])
+            else:
+                titles.append(f"Unknown (ID:{mid})")
+        return titles
+
     print("\nNCF模型推荐:")
     ncf_recs = recommender._recommend_by_model(test_user_id, 5)
-    print(f"  推荐电影: {ncf_recs}")
+    ncf_titles = movie_id_to_title(ncf_recs)
+    for i, title in enumerate(ncf_titles, 1):
+        print(f"  {i}. {title}")
 
     print("\nSASRec序列推荐:")
     sasrec_recs = recommender._recommend_by_sasrec(test_user_id, 5)
-    print(f"  推荐电影: {sasrec_recs}")
+    sasrec_titles = movie_id_to_title(sasrec_recs)
+    for i, title in enumerate(sasrec_titles, 1):
+        print(f"  {i}. {title}")
 
     print("\n[3/4] 测试综合推荐...")
     recommendations = recommender.recommend(test_user_id, n=10, method="hybrid")
@@ -893,15 +914,27 @@ def main():
     print(f"  个性化推荐: {len(recommendations['personalized'])} 条")
 
     print("\n[4/4] 显示推荐详情...")
-    details = recommender.get_recommendation_details(recommendations)
-    movies_df = pd.read_csv(os.path.join(data_dir, "processed", "movies.csv"))
 
-    print("\n个性化推荐电影:")
-    for mid in recommendations["personalized"][:5]:
+    print("\n热门推荐:")
+    for i, mid in enumerate(recommendations["popular"], 1):
         movie_info = movies_df[movies_df["movie_id"] == mid]
         if not movie_info.empty:
             title = movie_info.iloc[0]["title"]
-            print(f"  - {title}")
+            print(f"  {i}. {title}")
+
+    print("\n新品推荐:")
+    for i, mid in enumerate(recommendations["new"], 1):
+        movie_info = movies_df[movies_df["movie_id"] == mid]
+        if not movie_info.empty:
+            title = movie_info.iloc[0]["title"]
+            print(f"  {i}. {title}")
+
+    print("\n个性化推荐:")
+    for i, mid in enumerate(recommendations["personalized"], 1):
+        movie_info = movies_df[movies_df["movie_id"] == mid]
+        if not movie_info.empty:
+            title = movie_info.iloc[0]["title"]
+            print(f"  {i}. {title}")
 
     print("\n" + "=" * 60)
     print("测试完成！")
